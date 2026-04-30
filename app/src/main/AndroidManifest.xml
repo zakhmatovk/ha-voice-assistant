@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Запись аудио для wake-word и команд -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Hotword-аудио с более низким приоритетом (программный wake-word детектор) -->
+    <uses-permission android:name="android.permission.CAPTURE_AUDIO_HOTWORD" />
+    <!-- Foreground-сервис для постоянного прослушивания wake-word -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Скачивание модели с Hugging Face -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Assistant">
+
+        <!--
+            Открывает доступ к публичной vendor-библиотеке OpenCL для GPU-сэмплинга LiteRT-LM.
+            libOpenCL.so присутствует в /vendor/etc/public.libraries.txt на Snapdragon-устройствах.
+        -->
+        <uses-native-library
+            android:name="libOpenCL.so"
+            android:required="false" />
+
+        <!-- Главный экран настройки -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.Assistant">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!--
+                ASSIST intent-filter — делает приложение видимым в
+                Настройки → Приложения → Ассистент по умолчанию (Assist app).
+                Работает на всех Android-устройствах, включая OEM (Samsung, Xiaomi и др.),
+                где VoiceInteractionService может быть скрыт.
+                Активируется долгим нажатием Home или боковой кнопкой ассистента.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            VoiceInteractionService — точка входа для Android Voice Interaction API.
+            Чтобы активировать: Настройки → Приложения → Ассистент → выбрать это приложение.
+            После этого долгое нажатие Home / «Ок, Гугл» будет запускать нашу сессию.
+
+            Для кастомного wake-word без прав системного приложения используется
+            WakeWordListenerService (программный детектор, см. ниже).
+        -->
+        <service
+            android:name=".service.AssistantVoiceInteractionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.voice_interaction"
+                android:resource="@xml/voice_interaction" />
+        </service>
+
+        <!-- Создаёт VoiceInteractionSession при каждом новом запросе -->
+        <service
+            android:name=".service.AssistantSessionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION" />
+
+        <!--
+            Программный детектор wake-word (foreground service).
+            Слушает микрофон постоянно и триггерит VoiceInteractionService.
+            Требует: RECORD_AUDIO + FOREGROUND_SERVICE_MICROPHONE.
+            Для продакшена рекомендуется интеграция Picovoice Porcupine или аналога.
+        -->
+        <service
+            android:name=".service.WakeWordListenerService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+    </application>
+
+</manifest>

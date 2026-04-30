@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    VoiceInteractionService metadata.
+    sessionService  — обрабатывает сессию после активации ассистента
+    settingsActivity — открывается из системных настроек ассистента
+    supportsLocalInteraction — сессия может работать без системного RecognitionService
+-->
+<voice-interaction-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="com.example.assistant.service.AssistantSessionService"
+    android:settingsActivity="com.example.assistant.MainActivity"
+    android:supportsLocalInteraction="true" />
