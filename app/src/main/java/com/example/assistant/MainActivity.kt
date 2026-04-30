@@ -34,6 +34,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -42,7 +43,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -51,6 +54,7 @@ import com.example.assistant.model.ModelDownloader
 import com.example.assistant.ui.AssistUiState
 import com.example.assistant.ui.AssistantViewModel
 import com.example.assistant.ui.DownloadState
+import com.example.assistant.ui.HaConnectionState
 import com.example.assistant.ui.ImportState
 import com.example.assistant.ui.VoskDownloadState
 import com.example.assistant.ui.theme.AssistantTheme
@@ -148,6 +152,8 @@ private fun SetupScreen(
     val voskDownloadState by viewModel.voskDownloadState.collectAsState()
     val llmBackend by viewModel.llmBackend.collectAsState()
     val llmLoading by viewModel.llmLoading.collectAsState()
+    val haConnectionState by viewModel.haConnectionState.collectAsState()
+    val haUrl by viewModel.haUrl.collectAsState()
 
     LaunchedEffect(Unit) { viewModel.refresh() }
 
@@ -181,6 +187,12 @@ private fun SetupScreen(
                     StatusRow("Выбран ассистентом по умолчанию", ok = isDefaultAssistant)
                     StatusRow("Wake-word модель (Алекса / Алекс / Алексей)", ok = voskModelExists)
                     StatusRow("Модель gemma-4-E2B-it.litertlm", ok = modelExists)
+                    when (val ha = haConnectionState) {
+                        is HaConnectionState.Idle      -> StatusRow("Home Assistant", ok = false)
+                        is HaConnectionState.Checking  -> StatusRow("Home Assistant: проверка…", ok = false)
+                        is HaConnectionState.Connected -> StatusRow("Home Assistant: $haUrl", ok = true)
+                        is HaConnectionState.Error     -> StatusRow("Home Assistant: ${ha.message}", ok = false)
+                    }
                     if (modelExists) {
                         if (llmLoading) {
                             Row(
@@ -384,8 +396,16 @@ private fun SetupScreen(
                 }
             }
 
+            // --- Шаг 4: Home Assistant ---
+            HaSetupCard(
+                connectionState = haConnectionState,
+                currentUrl = haUrl,
+                onSave = { url, token -> viewModel.saveHaConfig(url, token) },
+                onRetry = { viewModel.checkHaConnection() }
+            )
+
             // --- Готово ---
-            if (isDefaultAssistant && voskModelExists && modelExists && llmBackend != null && !llmLoading) {
+            if (isDefaultAssistant && voskModelExists && modelExists && llmBackend != null && !llmLoading && haConnectionState is HaConnectionState.Connected) {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text("Готово!", style = MaterialTheme.typography.titleMedium)
@@ -395,6 +415,99 @@ private fun SetupScreen(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HaSetupCard(
+    connectionState: HaConnectionState,
+    currentUrl: String,
+    onSave: (url: String, token: String) -> Unit,
+    onRetry: () -> Unit
+) {
+    val connected = connectionState is HaConnectionState.Connected
+    var expanded by rememberSaveable { mutableStateOf(!connected) }
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Шаг 4: Home Assistant", style = MaterialTheme.typography.titleSmall)
+                if (connected) {
+                    OutlinedButton(onClick = { expanded = !expanded }) {
+                        Text(if (expanded) "Свернуть" else "Изменить")
+                    }
+                }
+            }
+
+            // Статус проверки
+            when (connectionState) {
+                is HaConnectionState.Checking -> Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                    Text("Проверяем соединение…", style = MaterialTheme.typography.bodySmall)
+                }
+                is HaConnectionState.Connected -> if (!expanded) {
+                    Text(
+                        "Подключено: $currentUrl",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    return@Column
+                }
+                is HaConnectionState.Error -> Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Ошибка: ${connectionState.message}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedButton(onClick = onRetry) { Text("Повторить") }
+                }
+                else -> Unit
+            }
+
+            if (connectionState is HaConnectionState.Checking) return@Column
+
+            var url   by rememberSaveable { mutableStateOf(currentUrl) }
+            var token by rememberSaveable { mutableStateOf("") }
+
+            Text(
+                "Введите адрес вашего Home Assistant и Long-Lived Access Token.",
+                style = MaterialTheme.typography.bodySmall
+            )
+            OutlinedTextField(
+                value = url,
+                onValueChange = { url = it },
+                label = { Text("URL (например http://192.168.1.10:8123)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = token,
+                onValueChange = { token = it },
+                label = { Text("Long-Lived Access Token") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Button(
+                onClick = { onSave(url, token) },
+                enabled = url.isNotBlank() && token.isNotBlank(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Сохранить и проверить")
             }
         }
     }

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+        Разрешаем HTTP для Home Assistant на локальной сети.
+        Приложение работает только внутри домашней сети, HTTPS не обязателен.
+    -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

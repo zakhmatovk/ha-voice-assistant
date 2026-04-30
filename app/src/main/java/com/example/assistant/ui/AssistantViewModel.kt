@@ -9,6 +9,8 @@ import androidx.lifecycle.AndroidViewModel
 import com.example.assistant.audio.AudioRecorderManager
 import com.example.assistant.audio.VoskDownloadProgress
 import com.example.assistant.audio.VoskModelManager
+import com.example.assistant.ha.HaCheckResult
+import com.example.assistant.ha.HaSettingsRepository
 import com.example.assistant.llm.LlmManager
 import com.example.assistant.model.DownloadProgress
 import com.example.assistant.service.WakeWordListenerService
@@ -56,6 +58,15 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
 
     private var voskDownloadJob: Job? = null
 
+    // --- Home Assistant ---
+    private val _haUrl = MutableStateFlow("")
+    val haUrl: StateFlow<String> = _haUrl.asStateFlow()
+
+    private val _haConnectionState = MutableStateFlow<HaConnectionState>(HaConnectionState.Idle)
+    val haConnectionState: StateFlow<HaConnectionState> = _haConnectionState.asStateFlow()
+
+    private var haCheckJob: Job? = null
+
     // --- Режим ассистента (запущен через ASSIST intent) ---
     private val _isAssistMode = MutableStateFlow(false)
     val isAssistMode: StateFlow<Boolean> = _isAssistMode.asStateFlow()
@@ -66,6 +77,7 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
 
     private val audioRecorder = AudioRecorderManager()
     private val llmManager = LlmManager(app)
+    private val haSettings = HaSettingsRepository(app)
     private var llmReady = false
     private var sessionJob: Job? = null
 
@@ -92,7 +104,27 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
         _modelExists.value = findModelFile() != null
         _isDefaultAssistant.value = checkIsDefaultAssistant()
         _voskModelExists.value = VoskModelManager(getApplication()).modelExists()
+        _haUrl.value = haSettings.url
+        if (haSettings.isConfigured) checkHaConnection()
         if (_modelExists.value) preloadModel()
+    }
+
+    fun saveHaConfig(url: String, token: String) {
+        haSettings.save(url, token)
+        _haUrl.value = haSettings.url
+        checkHaConnection()
+    }
+
+    fun checkHaConnection() {
+        haCheckJob?.cancel()
+        haCheckJob = scope.launch(Dispatchers.IO) {
+            _haConnectionState.value = HaConnectionState.Checking
+            _haConnectionState.value = when (val result = haSettings.checkConnection()) {
+                is HaCheckResult.Ok           -> HaConnectionState.Connected
+                is HaCheckResult.Unauthorized -> HaConnectionState.Error("Неверный токен (401)")
+                is HaCheckResult.Error        -> HaConnectionState.Error(result.message)
+            }
+        }
     }
 
     /**
@@ -359,6 +391,13 @@ sealed class DownloadState {
     data class Downloading(val bytesDone: Long, val totalBytes: Long) : DownloadState()
     data object Done : DownloadState()
     data class Error(val message: String) : DownloadState()
+}
+
+sealed class HaConnectionState {
+    data object Idle      : HaConnectionState()
+    data object Checking  : HaConnectionState()
+    data object Connected : HaConnectionState()
+    data class  Error(val message: String) : HaConnectionState()
 }
 
 sealed class AssistUiState {
