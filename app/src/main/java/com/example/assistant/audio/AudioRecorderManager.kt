@@ -166,7 +166,7 @@ class AudioRecorderManager {
         private const val SPEECH_RMS_THRESHOLD = 500.0
 
         /** Тишина после речи — сигнал конца фразы. */
-        private const val SILENCE_STOP_MS = 1_500L
+        private const val SILENCE_STOP_MS = 700L
 
         /** Если речи в новом аудио нет совсем — используем только preRoll. */
         private const val MIN_SPEECH_WAIT_MS = 2_000L

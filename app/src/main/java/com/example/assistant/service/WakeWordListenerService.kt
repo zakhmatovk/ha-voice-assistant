@@ -54,11 +54,11 @@ class WakeWordListenerService : Service() {
         try {
             detector = VoskWakeWordDetector(
                 modelPath  = modelDir.absolutePath,
-                keyword    = WAKE_WORD,
+                keywords   = WAKE_WORDS,
                 onDetected = ::onWakeWordDetected
             )
             detector!!.start()
-            Log.d(TAG, "Vosk детектор запущен (слово: '$WAKE_WORD')")
+            Log.d(TAG, "Vosk детектор запущен (слова: $WAKE_WORDS)")
         } catch (e: Exception) {
             Log.e(TAG, "Ошибка запуска Vosk детектора", e)
         }
@@ -66,7 +66,7 @@ class WakeWordListenerService : Service() {
 
     private fun onWakeWordDetected(preRollPcm: ByteArray, audioRecord: AudioRecord) {
         val preRollMs = preRollPcm.size.toLong() * 1000L / (16_000 * 2)
-        Log.i(TAG, "Wake-word '$WAKE_WORD' → pre-roll ${preRollPcm.size} байт (~${preRollMs}мс), передаём AudioRecord")
+        Log.i(TAG, "Wake-word → pre-roll ${preRollPcm.size} байт (~${preRollMs}мс), передаём AudioRecord")
         pendingTailPcm    = preRollPcm
         pendingAudioRecord = audioRecord
         detector = null // детектор отдал AudioRecord, считается остановленным
@@ -84,15 +84,15 @@ class WakeWordListenerService : Service() {
         )
         return Notification.Builder(this, channelId)
             .setContentTitle("Ассистент активен")
-            .setContentText("Скажите «Алекса» для активации")
+            .setContentText("Скажите «Алекса», «Алекс» или «Алексей» для активации")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .build()
     }
 
     companion object {
         private const val TAG             = "WakeWordListener"
-        private const val WAKE_WORD       = "алекса"
         private const val NOTIFICATION_ID = 1
+        private val WAKE_WORDS = setOf("алекса", "алекс", "алексей")
 
         /** Intent action для перезапуска детектора из ViewModel после завершения сессии. */
         const val ACTION_RESTART_DETECTOR = "com.example.assistant.RESTART_WAKE_WORD_DETECTOR"

@@ -17,6 +17,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -263,6 +264,11 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
                     _llmBackend.value = llmManager.activeBackend
                 }
 
+                // Создаём Conversation параллельно с записью — к концу речи он уже готов
+                val conversationDeferred = async(Dispatchers.IO) {
+                    llmManager.prepareConversation()
+                }
+
                 _uiState.value = AssistUiState.Recording
                 val tailPcm      = WakeWordListenerService.pendingTailPcm ?: ByteArray(0)
                 val handoffRecord = WakeWordListenerService.pendingAudioRecord
@@ -277,8 +283,9 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
                            "(preRoll=${tailPcm.size} байт, handoff=${handoffRecord != null})")
 
                 _uiState.value = AssistUiState.Processing
+                val prebuiltConversation = conversationDeferred.await()
                 val responseBuilder = StringBuilder()
-                llmManager.processCommand(wav).collect { chunk ->
+                llmManager.processCommand(wav, prebuiltConversation).collect { chunk ->
                     responseBuilder.append(chunk)
                     _uiState.value = AssistUiState.Responding(responseBuilder.toString())
                 }

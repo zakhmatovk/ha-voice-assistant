@@ -84,29 +84,39 @@ class LlmManager(private val context: Context) {
     }
 
     /**
-     * Обрабатывает голосовую команду:
-     * аудио (WAV) → Gemma 4 e2b → function calling → Flow<String> с токенами ответа.
+     * Создаёт и возвращает готовую Conversation.
+     * Вызывать параллельно с записью аудио, чтобы к моменту окончания записи
+     * объект уже был готов и не добавлял задержку перед инференсом.
      *
-     * Предыдущая Conversation закрывается автоматически перед созданием новой.
+     * Предыдущая Conversation закрывается автоматически.
      */
-    fun processCommand(audioWavBytes: ByteArray): Flow<String> {
+    fun prepareConversation(): Conversation {
         val eng = checkNotNull(engine) { "LlmManager не инициализирован" }
 
-        val wavDurationMs = (audioWavBytes.size - 44).toLong() * 1000L / (16_000 * 2)
-        Log.d(TAG, "processCommand: WAV ${audioWavBytes.size} байт, ~${wavDurationMs} мс аудио")
-
-        // Закрываем предыдущую сессию — движок поддерживает только одну одновременно
         conversation?.close()
         conversation = null
 
-        val conversationConfig = ConversationConfig(
+        val config = ConversationConfig(
             systemInstruction = Contents.of(systemPrompt),
             tools = listOf(tool(haTools)),
             samplerConfig = SamplerConfig(temperature = 0.6, topK = 40, topP = 0.95),
             automaticToolCalling = true
         )
-        val conv = eng.createConversation(conversationConfig)
-        conversation = conv
+        return eng.createConversation(config).also {
+            conversation = it
+            Log.d(TAG, "Conversation подготовлен заранее")
+        }
+    }
+
+    /**
+     * Отправляет аудио (WAV) в заранее подготовленный [conv] и возвращает Flow<String> токенов.
+     * Если [conv] не передан — создаёт Conversation самостоятельно (медленнее).
+     */
+    fun processCommand(audioWavBytes: ByteArray, conv: Conversation? = null): Flow<String> {
+        val wavDurationMs = (audioWavBytes.size - 44).toLong() * 1000L / (16_000 * 2)
+        Log.d(TAG, "processCommand: WAV ${audioWavBytes.size} байт, ~${wavDurationMs} мс аудио")
+
+        val activeConv = conv ?: prepareConversation()
 
         val contents = Contents.of(
             Content.AudioBytes(bytes = audioWavBytes),
@@ -116,16 +126,8 @@ class LlmManager(private val context: Context) {
             )
         )
 
-        val responseBuilder = StringBuilder()
-        return conv.sendMessageAsync(Message.user(contents)).map { chunk ->
-            val token = chunk.toString()
-            responseBuilder.append(token)
-            token
-        }.also {
-            // Логируем финальный ответ после завершения flow (best-effort через отдельный поток)
-            // Полный ответ будет видён в logcat по мере стриминга токенов
-            Log.d(TAG, "Стриминг ответа начат")
-        }
+        Log.d(TAG, "Стриминг ответа начат")
+        return activeConv.sendMessageAsync(Message.user(contents)).map { it.toString() }
     }
 
     fun close() {

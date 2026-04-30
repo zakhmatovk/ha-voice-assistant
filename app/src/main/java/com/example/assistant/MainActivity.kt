@@ -179,7 +179,7 @@ private fun SetupScreen(
                     Text("Статус", style = MaterialTheme.typography.titleMedium)
                     StatusRow("Разрешение RECORD_AUDIO", ok = true)
                     StatusRow("Выбран ассистентом по умолчанию", ok = isDefaultAssistant)
-                    StatusRow("Wake-word модель (Алекса)", ok = voskModelExists)
+                    StatusRow("Wake-word модель (Алекса / Алекс / Алексей)", ok = voskModelExists)
                     StatusRow("Модель gemma-4-E2B-it.litertlm", ok = modelExists)
                     if (modelExists) {
                         if (llmLoading) {
@@ -217,12 +217,12 @@ private fun SetupScreen(
             if (!voskModelExists || voskDownloadState !is VoskDownloadState.Idle) {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Шаг 2: Модель wake-word «Алекса»", style = MaterialTheme.typography.titleSmall)
+                        Text("Шаг 2: Модель wake-word", style = MaterialTheme.typography.titleSmall)
 
                         when (val v = voskDownloadState) {
                             is VoskDownloadState.Idle -> {
                                 Text(
-                                    "Офлайн-модель распознавания (~45 МБ). Нужна один раз.",
+                                    "Офлайн-модель распознавания (~45 МБ). Слова: «Алекса», «Алекс», «Алексей».",
                                     style = MaterialTheme.typography.bodySmall
                                 )
                                 Button(
@@ -385,12 +385,12 @@ private fun SetupScreen(
             }
 
             // --- Готово ---
-            if (isDefaultAssistant && voskModelExists && modelExists) {
+            if (isDefaultAssistant && voskModelExists && modelExists && llmBackend != null && !llmLoading) {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text("Готово!", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "Скажите «Алекса» или удержите кнопку Home для активации ассистента.",
+                            "Скажите «Алекса», «Алекс» или «Алексей», либо удержите кнопку Home для активации ассистента.",
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }

@@ -13,9 +13,11 @@ import java.io.ByteArrayOutputStream
  * Детектор wake-word на базе Vosk (офлайн, русский язык).
  *
  * Защита от ложных срабатываний:
- * - Только финальные результаты (partial убран — слишком шумный)
- * - Точное совпадение: text.trim() == keyword
- * - Энергетический gate: RMS последних буферов должен превышать [MIN_SPEECH_RMS]
+ * - Только финальные результаты
+ * - Точное совпадение с одним из [keywords]
+ * - Адаптивный энергетический gate: порог = max(MIN_ABSOLUTE_RMS, noiseFloor × SPEECH_TO_NOISE_RATIO)
+ *   noiseFloor обновляется через EMA на "тихих" чанках (rms < noiseFloor × 2),
+ *   что позволяет автоматически подстраиваться под уровень окружающего шума.
  * - Cooldown [COOLDOWN_MS] между срабатываниями
  *
  * Скользящий буфер [ROLLING_BUFFER_MS]:
@@ -28,7 +30,7 @@ import java.io.ByteArrayOutputStream
  */
 class VoskWakeWordDetector(
     private val modelPath: String,
-    private val keyword: String = "алекса",
+    private val keywords: Set<String> = setOf("алекса", "алекс", "алексей"),
     private val onDetected: (preRollPcm: ByteArray, audioRecord: AudioRecord) -> Unit
 ) {
     private var model: Model? = null
@@ -43,6 +45,10 @@ class VoskWakeWordDetector(
     private val rmsWindow = FloatArray(RMS_WINDOW_SIZE)
     private var rmsWindowIdx = 0
 
+    // Адаптивный уровень фонового шума (EMA, обновляется только на тихих чанках).
+    // Инициализируется из lastKnownNoiseFloor чтобы не калибровать заново после перезапуска.
+    private var noiseFloor = lastKnownNoiseFloor ?: NOISE_FLOOR_INIT
+
     // Скользящий буфер PCM: все прочитанные блоки, суммарно не более ROLLING_BUFFER_MAX_BYTES
     private val rollingChunks = ArrayDeque<ByteArray>()
     private var rollingBufferBytes = 0
@@ -51,9 +57,10 @@ class VoskWakeWordDetector(
         if (running) return
         running = true
 
+        val grammarWords = keywords.joinToString(", ") { "\"$it\"" }
         model      = Model(modelPath)
         recognizer = Recognizer(model, SAMPLE_RATE.toFloat()).apply {
-            setGrammar("""["$keyword", "[unk]"]""")
+            setGrammar("""[$grammarWords, "[unk]"]""")
         }
 
         val minBuf = AudioRecord.getMinBufferSize(
@@ -76,7 +83,33 @@ class VoskWakeWordDetector(
 
         detectorThread = Thread({
             val buf = ByteArray(CHUNK_SIZE)
-            Log.d(TAG, "Wake-word listening for '$keyword' (rolling buffer: ${ROLLING_BUFFER_MS}мс)")
+            Log.d(TAG, "Wake-word listening for $keywords (rolling buffer: ${ROLLING_BUFFER_MS}мс)")
+
+            // Фаза калибровки: только при первом запуске (lastKnownNoiseFloor == null).
+            // При перезапуске после команды — используем сохранённое значение, не ждём.
+            if (lastKnownNoiseFloor == null) {
+                var calibrationSum = 0f
+                var calibrationCount = 0
+                while (running && calibrationCount < CALIBRATION_CHUNKS) {
+                    val read = record.read(buf, 0, buf.size)
+                    if (read <= 0) continue
+                    val chunk = buf.copyOf(read)
+                    rollingChunks.addLast(chunk)
+                    rollingBufferBytes += read
+                    while (rollingBufferBytes > ROLLING_BUFFER_MAX_BYTES && rollingChunks.isNotEmpty()) {
+                        rollingBufferBytes -= rollingChunks.removeFirst().size
+                    }
+                    calibrationSum += calculateRms(buf, read).toFloat()
+                    calibrationCount++
+                }
+                if (calibrationCount > 0) {
+                    noiseFloor = calibrationSum / calibrationCount
+                    lastKnownNoiseFloor = noiseFloor
+                    Log.d(TAG, "Калибровка: noiseFloor=${"%.0f".format(noiseFloor)} (по $calibrationCount чанкам ~${calibrationCount / 2}с), threshold=${"%.0f".format(maxOf(MIN_ABSOLUTE_RMS, noiseFloor * SPEECH_TO_NOISE_RATIO))}")
+                }
+            } else {
+                Log.d(TAG, "Калибровка пропущена — используем noiseFloor=${"%.0f".format(noiseFloor)} из предыдущей сессии")
+            }
 
             try {
                 while (running) {
@@ -93,19 +126,35 @@ class VoskWakeWordDetector(
                     }
 
                     // Обновляем скользящее окно энергии
-                    rmsWindow[rmsWindowIdx % RMS_WINDOW_SIZE] = calculateRms(buf, read).toFloat()
+                    val rms = calculateRms(buf, read).toFloat()
+                    rmsWindow[rmsWindowIdx % RMS_WINDOW_SIZE] = rms
                     rmsWindowIdx++
 
+                    // Адаптивный noise floor: обновляем EMA только на тихих чанках
+                    if (rms < noiseFloor * 2f) {
+                        noiseFloor = noiseFloor * (1f - NOISE_EMA_ALPHA) + rms * NOISE_EMA_ALPHA
+                        lastKnownNoiseFloor = noiseFloor
+                    }
+                    val adaptiveThreshold = maxOf(MIN_ABSOLUTE_RMS, noiseFloor * SPEECH_TO_NOISE_RATIO)
+                    Log.v(TAG, "chunk rms=${"%.0f".format(rms)} maxRms=${"%.0f".format(rmsWindow.max())} noiseFloor=${"%.0f".format(noiseFloor)} threshold=${"%.0f".format(adaptiveThreshold)}")
+
                     // Только финальные результаты
-                    if (!recognizer!!.acceptWaveForm(buf, read)) continue
+                    val isFinal = recognizer!!.acceptWaveForm(buf, read)
+                    if (!isFinal) {
+                        val partial = JSONObject(recognizer!!.partialResult).optString("partial").trim()
+                        if (partial.isNotEmpty()) Log.v(TAG, "partial: «$partial»")
+                        continue
+                    }
 
-                    val text = JSONObject(recognizer!!.result).optString("text").trim()
-                    if (text != keyword) continue
+                    val resultJson = recognizer!!.result
+                    val text = JSONObject(resultJson).optString("text").trim()
+                    Log.d(TAG, "final: «$text» rms=${"%.0f".format(rmsWindow.max())}")
+                    if (text !in keywords) continue
 
-                    // Энергетический gate
+                    // Адаптивный энергетический gate
                     val maxRms = rmsWindow.max()
-                    if (maxRms < MIN_SPEECH_RMS) {
-                        Log.d(TAG, "Отклонено (тихо): maxRms=${"%.0f".format(maxRms)}")
+                    if (maxRms < adaptiveThreshold) {
+                        Log.d(TAG, "Отклонено (тихо): maxRms=${"%.0f".format(maxRms)} threshold=${"%.0f".format(adaptiveThreshold)} noiseFloor=${"%.0f".format(noiseFloor)}")
                         continue
                     }
 
@@ -116,7 +165,7 @@ class VoskWakeWordDetector(
                         continue
                     }
 
-                    Log.i(TAG, "Wake word: '$keyword' maxRms=${"%.0f".format(maxRms)}")
+                    Log.i(TAG, "Wake word: '$text' maxRms=${"%.0f".format(maxRms)} threshold=${"%.0f".format(adaptiveThreshold)} noiseFloor=${"%.0f".format(noiseFloor)}")
                     lastDetectionTime = now
                     rmsWindow.fill(0f)
                     recognizer!!.reset()
@@ -179,14 +228,23 @@ class VoskWakeWordDetector(
     }
 
     companion object {
-        private const val TAG              = "VoskWakeWordDetector"
-        private const val SAMPLE_RATE      = 16_000
-        private const val MIN_SPEECH_RMS   = 400.0   // тишина ~50-150, речь ~800-4000
-        private const val COOLDOWN_MS      = 3_000L
-        private const val RMS_WINDOW_SIZE  = 6        // последние ~3 с при чанке ~500мс
-        private const val CHUNK_SIZE       = SAMPLE_RATE / 2 * 2   // ~500мс (16000 байт)
-        private const val ROLLING_BUFFER_MS = 5_000L  // держим последние 5 секунд
-        private val ROLLING_BUFFER_MAX_BYTES =
+        private const val TAG                   = "VoskWakeWordDetector"
+        private const val SAMPLE_RATE           = 16_000
+        private const val COOLDOWN_MS           = 3_000L
+        private const val RMS_WINDOW_SIZE       = 6       // последние ~3 с при чанке ~500мс
+        private const val CHUNK_SIZE            = SAMPLE_RATE / 2 * 2   // ~500мс (16000 байт)
+        private const val ROLLING_BUFFER_MS     = 5_000L  // держим последние 5 секунд
+        private val ROLLING_BUFFER_MAX_BYTES    =
             (SAMPLE_RATE * 2 * ROLLING_BUFFER_MS / 1000).toInt()   // 160000 байт
+
+        // Адаптивный порог
+        private const val NOISE_FLOOR_INIT      = 35f    // стартовая оценка шума (до калибровки)
+        private const val NOISE_EMA_ALPHA       = 0.05f  // скорость адаптации (~20 чанков = ~10с)
+        private const val SPEECH_TO_NOISE_RATIO = 3.0f   // речь должна быть в 3× громче шума
+        private const val MIN_ABSOLUTE_RMS      = 80f    // нижний предел порога (страховка)
+        private const val CALIBRATION_CHUNKS    = 6      // ~3с калибровки перед стартом (6 × 500мс)
+
+        /** Сохраняется между перезапусками детектора — калибровка только при первом старте. */
+        @Volatile var lastKnownNoiseFloor: Float? = null
     }
 }
